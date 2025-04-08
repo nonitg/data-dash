@@ -794,8 +794,83 @@ function updateChart() {
     const yAxisField = document.getElementById('yAxisSelect').value;
     const groupByField = document.getElementById('groupBySelect').value;
     
-    // Update chart title
-    document.getElementById('chartTitle').textContent = `${yAxisField} by ${xAxisField}${groupByField ? ' grouped by ' + groupByField : ''}`;
+    // For survey data, use our more reliable method to determine if fields are numeric
+    const isNumericField = (fieldName) => {
+        // Check if the field typically contains numeric values
+        const numericFields = [
+            'How many biological children do you have?',
+            'How many biological siblings do you have?',
+            'On a scale of 1-15, 1 being not religious at all, and 15 being very religious, please identify how religious you are:',
+            'On a scale of 1-15, 1 being not at all and 15 being completely, how important is having children to you?',
+            'On a scale of 1-15 (1 being no influence, 15 being very influential) how much influence do you have over family planning decisions?',
+            '10) What is your ideal number of children?'
+        ];
+        
+        if (numericFields.includes(fieldName)) {
+            return true;
+        }
+        
+        // For other fields, sample some values to check if they're mostly numeric
+        const sampleSize = Math.min(30, filteredData.length);
+        let numericCount = 0;
+        
+        for (let i = 0; i < sampleSize; i++) {
+            const item = filteredData[i];
+            const value = item[fieldName];
+            
+            if (
+                value !== undefined && 
+                value !== null && 
+                value !== '' && 
+                !isNaN(Number(value)) && 
+                typeof value !== 'boolean'
+            ) {
+                numericCount++;
+            }
+        }
+        
+        // If more than 70% of the sample values are numeric, consider it a numeric field
+        return numericCount > sampleSize * 0.7;
+    };
+    
+    const isXAxisNumeric = isNumericField(xAxisField);
+    const isYAxisNumeric = isNumericField(yAxisField);
+    
+    // Check if the fields are scale questions (values 1-15)
+    const isScaleQuestion = (field) => {
+        return field.includes('scale of 1-15') || 
+               field.includes('how religious') || 
+               field.includes('how important') || 
+               field.includes('how much influence');
+    };
+    
+    // Determine if we should use a bubble chart for visualization
+    const shouldUseBubbleChart = isXAxisNumeric && isYAxisNumeric && 
+                               (isScaleQuestion(xAxisField) || isScaleQuestion(yAxisField)) && 
+                               !groupByField;
+    
+    // If this is a scale vs scale comparison, override the chart type to bubble
+    const effectiveChartType = shouldUseBubbleChart ? 'bubble' : chartType;
+    
+    // Update chart title based on data types
+    if (!isXAxisNumeric && isYAxisNumeric) {
+        document.getElementById('chartTitle').textContent = 
+            `Average ${yAxisField} by ${xAxisField}${groupByField ? ' grouped by ' + groupByField : ''}`;
+    } else if (isXAxisNumeric && isYAxisNumeric) {
+        if (shouldUseBubbleChart) {
+            document.getElementById('chartTitle').textContent = 
+                `Frequency of responses: ${yAxisField} vs ${xAxisField}`;
+        } else {
+            document.getElementById('chartTitle').textContent = 
+                `${yAxisField} vs ${xAxisField}${groupByField ? ' grouped by ' + groupByField : ''}`;
+        }
+    } else if (!isXAxisNumeric && !isYAxisNumeric) {
+        document.getElementById('chartTitle').textContent = 
+            `${yAxisField} distribution by ${xAxisField}${groupByField ? ' grouped by ' + groupByField : ''}`;
+    } else {
+        document.getElementById('chartTitle').textContent = 
+            `${yAxisField} by ${xAxisField}${groupByField ? ' grouped by ' + groupByField : ''}`;
+    }
     
     // Prepare data for the chart
     const chartData = prepareChartData(xAxisField, yAxisField, groupByField);
@@ -808,58 +883,138 @@ function updateChart() {
         mainChart.destroy();
     }
     
-    // Create new chart
-    mainChart = new Chart(ctx, {
-        type: chartType,
-        data: chartData,
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    position: 'top',
-                },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            let label = context.dataset.label || '';
-                            if (label) {
-                                label += ': ';
-                            }
-                            if (context.parsed.y !== null) {
-                                label += context.parsed.y;
-                            }
-                            return label;
+    // Set up chart options
+    let chartOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                position: 'top',
+                labels: {
+                    boxWidth: 12,
+                    font: {
+                        size: 11
+                    },
+                    // Limit legend items if there are too many
+                    filter: function(legendItem, chartData) {
+                        // If more than 10 items, only show top items
+                        if (chartData.datasets.length > 10 && !groupByField) {
+                            return legendItem.datasetIndex < 10;
                         }
+                        return true;
+                    }
+                },
+                // Add "Show More" button if there are many categories
+                title: {
+                    display: chartData.datasets.length > 10 && !groupByField,
+                    text: `Showing top 10 of ${chartData.datasets.length} categories`,
+                    font: {
+                        size: 10,
+                        style: 'italic'
                     }
                 }
             },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    title: {
-                        display: true,
-                        text: yAxisField
+            tooltip: {
+                callbacks: {
+                    label: function(context) {
+                        let label = context.dataset.label || '';
+                        
+                        // Special handling for bubble charts
+                        if (shouldUseBubbleChart) {
+                            const point = context.raw;
+                            return `${xAxisField}: ${point.x}, ${yAxisField}: ${point.y}, Count: ${point.count} responses`;
+                        }
+                        
+                        if (label) {
+                            label += ': ';
+                        }
+                        
+                        const value = context.raw !== undefined ? context.raw : context.parsed.y;
+                        
+                        if (value !== null && value !== undefined) {
+                            label += value;
+                            
+                            // Add count information for averages if available
+                            if (isYAxisNumeric && !isXAxisNumeric) {
+                                const category = chartData.labels[context.dataIndex];
+                                let count = 0;
+                                
+                                // Get count from dataset metadata
+                                if (context.dataset.meta && context.dataset.meta.categoryCounts) {
+                                    count = context.dataset.meta.categoryCounts[category] || 0;
+                                } else if (context.dataset.meta && context.dataset.meta.counts) {
+                                    count = context.dataset.meta.counts[category] || 0;
+                                }
+                                
+                                if (count > 0) {
+                                    label += ` (avg of ${count} values)`;
+                                }
+                            } else if (!isYAxisNumeric && !isXAxisNumeric) {
+                                // For categorical-categorical, show count
+                                label += ' respondents';
+                            }
+                        }
+                        return label;
                     }
+                }
+            }
+        },
+        scales: {
+            y: {
+                beginAtZero: true,
+                title: {
+                    display: true,
+                    text: isYAxisNumeric ? `${yAxisField}` : `Count of ${yAxisField}`
+                }
+            },
+            x: {
+                title: {
+                    display: true,
+                    text: xAxisField
                 },
-                x: {
-                    title: {
-                        display: true,
-                        text: xAxisField
+                // Handle large label sets by rotating or truncating
+                ticks: {
+                    maxRotation: 45,
+                    minRotation: 0,
+                    autoSkip: true,
+                    callback: function(value, index, values) {
+                        const label = this.getLabelForValue(value);
+                        // Truncate long labels
+                        if (label && label.length > 20) {
+                            return label.substring(0, 17) + '...';
+                        }
+                        return label;
                     }
                 }
             }
         }
+    };
+    
+    // For categorical-categorical data, use stacked bars
+    if (!isXAxisNumeric && !isYAxisNumeric && chartType === 'bar') {
+        chartOptions.scales.x.stacked = true;
+        chartOptions.scales.y.stacked = true;
+    }
+    
+    // For bubble charts, customize the radius scale
+    if (shouldUseBubbleChart) {
+        chartOptions.scales.r = {
+            max: 20,
+            min: 2
+        };
+    }
+    
+    // Create new chart
+    mainChart = new Chart(ctx, {
+        type: effectiveChartType,
+        data: chartData,
+        options: chartOptions
     });
 }
 
 // Prepare data for the chart based on selected fields
 function prepareChartData(xAxisField, yAxisField, groupByField) {
-    // For categorical x-axis (most common case)
-    const isXAxisNumeric = !isNaN(Number(filteredData[0]?.[xAxisField]));
-    const isYAxisNumeric = !isNaN(Number(filteredData[0]?.[yAxisField]));
-    
-    // If no data is available
+    // Check if the data is empty
     if (filteredData.length === 0) {
         return {
             labels: [],
@@ -870,6 +1025,48 @@ function prepareChartData(xAxisField, yAxisField, groupByField) {
             }]
         };
     }
+
+    // For survey data, we need a better way to determine if a field is numeric
+    const isNumericField = (fieldName) => {
+        // Check if the field typically contains numeric values
+        const numericFields = [
+            'How many biological children do you have?',
+            'How many biological siblings do you have?',
+            'On a scale of 1-15, 1 being not religious at all, and 15 being very religious, please identify how religious you are:',
+            'On a scale of 1-15, 1 being not at all and 15 being completely, how important is having children to you?',
+            'On a scale of 1-15 (1 being no influence, 15 being very influential) how much influence do you have over family planning decisions?',
+            '10) What is your ideal number of children?'
+        ];
+        
+        if (numericFields.includes(fieldName)) {
+            return true;
+        }
+        
+        // For other fields, sample some values to check if they're mostly numeric
+        const sampleSize = Math.min(30, filteredData.length);
+        let numericCount = 0;
+        
+        for (let i = 0; i < sampleSize; i++) {
+            const item = filteredData[i];
+            const value = item[fieldName];
+            
+            if (
+                value !== undefined && 
+                value !== null && 
+                value !== '' && 
+                !isNaN(Number(value)) && 
+                typeof value !== 'boolean'
+            ) {
+                numericCount++;
+            }
+        }
+        
+        // If more than 70% of the sample values are numeric, consider it a numeric field
+        return numericCount > sampleSize * 0.7;
+    };
+    
+    const isXAxisNumeric = isNumericField(xAxisField);
+    const isYAxisNumeric = isNumericField(yAxisField);
     
     // Handle different data preparation based on field types
     if (!isXAxisNumeric && isYAxisNumeric) {
@@ -878,8 +1075,11 @@ function prepareChartData(xAxisField, yAxisField, groupByField) {
     } else if (isXAxisNumeric && isYAxisNumeric) {
         // Numeric X, Numeric Y (scatter plot case)
         return prepareNumericNumericData(xAxisField, yAxisField, groupByField);
+    } else if (isXAxisNumeric && !isYAxisNumeric) {
+        // For this dataset, it's better to just use categorical-numeric for this case too
+        return prepareCategoricalNumericData(xAxisField, yAxisField, groupByField);
     } else {
-        // Other cases (categorical Y or both categorical)
+        // Both categorical
         return prepareCategoricalData(xAxisField, yAxisField, groupByField);
     }
 }
@@ -889,40 +1089,58 @@ function prepareCategoricalNumericData(xAxisField, yAxisField, groupByField) {
     // Get unique categories for x-axis
     const categories = new Set();
     filteredData.forEach(item => {
-        if (item[xAxisField]) {
+        if (item[xAxisField] !== undefined && item[xAxisField] !== null) {
             categories.add(item[xAxisField]);
         }
     });
     const xLabels = Array.from(categories).sort();
     
+    // Store metadata for tooltips
+    const metaData = {};
+    
     // If no groupBy field is specified
     if (!groupByField) {
         // Calculate average Y value for each X category
-        const yValues = xLabels.map(category => {
+        const yValues = [];
+        const categoryCounts = {}; // Store sample sizes for tooltips
+        
+        xLabels.forEach(category => {
             const categoryItems = filteredData.filter(item => item[xAxisField] === category);
             const validValues = categoryItems
                 .map(item => Number(item[yAxisField]))
                 .filter(value => !isNaN(value));
             
-            if (validValues.length === 0) return 0;
-            return validValues.reduce((sum, value) => sum + value, 0) / validValues.length;
+            if (validValues.length === 0) {
+                yValues.push(0);
+                categoryCounts[category] = 0;
+                return;
+            }
+            
+            // Calculate the average
+            const avg = validValues.reduce((sum, value) => sum + value, 0) / validValues.length;
+            yValues.push(parseFloat(avg.toFixed(2))); // Round to 2 decimal places
+            categoryCounts[category] = validValues.length;
         });
+        
+        // Store metadata for tooltips
+        metaData.categoryCounts = categoryCounts;
         
         return {
             labels: xLabels,
             datasets: [{
-                label: yAxisField,
-                data: yValues,
+                label: `Average ${yAxisField}`,
+                data: yValues, // Plain array for bar charts
                 backgroundColor: 'rgba(54, 162, 235, 0.5)',
                 borderColor: 'rgba(54, 162, 235, 1)',
-                borderWidth: 1
+                borderWidth: 1,
+                meta: metaData
             }]
         };
     } else {
         // With groupBy field, create multiple datasets
         const groupValues = new Set();
         filteredData.forEach(item => {
-            if (item[groupByField]) {
+            if (item[groupByField] !== undefined && item[groupByField] !== null) {
                 groupValues.add(item[groupByField]);
             }
         });
@@ -931,9 +1149,15 @@ function prepareCategoricalNumericData(xAxisField, yAxisField, groupByField) {
         // Generate colors for each group
         const colors = generateColors(groups.length);
         
+        // Store group metadata
+        const groupMeta = {};
+        
         // Create a dataset for each group
         const datasets = groups.map((group, index) => {
-            const yValues = xLabels.map(category => {
+            const yValues = [];
+            const groupCounts = {};
+            
+            xLabels.forEach(category => {
                 const groupItems = filteredData.filter(
                     item => item[xAxisField] === category && item[groupByField] === group
                 );
@@ -941,18 +1165,32 @@ function prepareCategoricalNumericData(xAxisField, yAxisField, groupByField) {
                     .map(item => Number(item[yAxisField]))
                     .filter(value => !isNaN(value));
                 
-                if (validValues.length === 0) return 0;
-                return validValues.reduce((sum, value) => sum + value, 0) / validValues.length;
+                if (validValues.length === 0) {
+                    yValues.push(0);
+                    groupCounts[category] = 0;
+                    return;
+                }
+                
+                // Calculate the average
+                const avg = validValues.reduce((sum, value) => sum + value, 0) / validValues.length;
+                yValues.push(parseFloat(avg.toFixed(2))); // Round to 2 decimal places
+                groupCounts[category] = validValues.length;
             });
             
+            // Store metadata for tooltips
+            groupMeta[group] = groupCounts;
+            
             return {
-                label: group,
-                data: yValues,
+                label: `${group} (Avg ${yAxisField})`,
+                data: yValues, // Plain array for bar charts
                 backgroundColor: colors[index].replace('1)', '0.5)'),
                 borderColor: colors[index],
-                borderWidth: 1
+                borderWidth: 1,
+                meta: { counts: groupCounts }
             };
         });
+        
+        metaData.groupCounts = groupMeta;
         
         return {
             labels: xLabels,
@@ -965,20 +1203,85 @@ function prepareCategoricalNumericData(xAxisField, yAxisField, groupByField) {
 function prepareNumericNumericData(xAxisField, yAxisField, groupByField) {
     // If no groupBy field is specified
     if (!groupByField) {
-        const data = filteredData.map(item => ({
-            x: Number(item[xAxisField]),
-            y: Number(item[yAxisField])
-        })).filter(point => !isNaN(point.x) && !isNaN(point.y));
-        
-        return {
-            datasets: [{
-                label: `${yAxisField} vs ${xAxisField}`,
-                data: data,
-                backgroundColor: 'rgba(54, 162, 235, 0.5)',
-                borderColor: 'rgba(54, 162, 235, 1)',
-                borderWidth: 1
-            }]
+        // For survey data with scale questions (e.g., 1-15), create a frequency-based visualization
+        // Check if the fields are likely to be scale questions (values 1-15 for religiosity, importance, etc.)
+        const isScaleQuestion = (field) => {
+            return field.includes('scale of 1-15') || 
+                   field.includes('how religious') || 
+                   field.includes('how important') || 
+                   field.includes('how much influence');
         };
+        
+        const isLikelyScaleData = isScaleQuestion(xAxisField) || isScaleQuestion(yAxisField);
+        
+        if (isLikelyScaleData) {
+            // Create a bubble chart or heatmap showing the frequency of each combination
+            // First, count occurrences of each x,y combination
+            const frequencyMap = {};
+            const pointsData = [];
+            
+            filteredData.forEach(item => {
+                const x = Number(item[xAxisField]);
+                const y = Number(item[yAxisField]);
+                
+                if (!isNaN(x) && !isNaN(y)) {
+                    const key = `${x},${y}`;
+                    frequencyMap[key] = (frequencyMap[key] || 0) + 1;
+                    
+                    // Add to pointsData only if it doesn't exist yet
+                    if (frequencyMap[key] === 1) {
+                        pointsData.push({ x, y, count: 1 });
+                    } else {
+                        // Update the existing point
+                        const point = pointsData.find(p => p.x === x && p.y === y);
+                        if (point) {
+                            point.count = frequencyMap[key];
+                        }
+                    }
+                }
+            });
+            
+            // Convert to bubble chart data format
+            const bubbleData = pointsData.map(point => ({
+                x: point.x,
+                y: point.y,
+                r: Math.sqrt(point.count) * 5, // Scale radius for visibility
+                count: point.count
+            }));
+            
+            // Generate a color gradient based on frequency
+            const maxFrequency = Math.max(...bubbleData.map(item => item.count));
+            const backgroundColors = bubbleData.map(item => {
+                const intensity = item.count / maxFrequency;
+                return `rgba(54, 162, 235, ${0.3 + intensity * 0.7})`; // More opacity for higher frequency
+            });
+            
+            return {
+                datasets: [{
+                    label: `${yAxisField} vs ${xAxisField}`,
+                    data: bubbleData,
+                    backgroundColor: backgroundColors,
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    borderWidth: 1
+                }]
+            };
+        } else {
+            // For other numeric data, use regular scatter plot
+            const data = filteredData.map(item => ({
+                x: Number(item[xAxisField]),
+                y: Number(item[yAxisField])
+            })).filter(point => !isNaN(point.x) && !isNaN(point.y));
+            
+            return {
+                datasets: [{
+                    label: `${yAxisField} vs ${xAxisField}`,
+                    data: data,
+                    backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    borderWidth: 1
+                }]
+            };
+        }
     } else {
         // With groupBy field, create multiple datasets
         const groupValues = new Set();
@@ -1022,33 +1325,74 @@ function prepareCategoricalData(xAxisField, yAxisField, groupByField) {
     // Get unique categories for x-axis
     const categories = new Set();
     filteredData.forEach(item => {
-        if (item[xAxisField]) {
+        if (item[xAxisField] !== undefined && item[xAxisField] !== null && item[xAxisField] !== '') {
             categories.add(item[xAxisField]);
         }
     });
     const xLabels = Array.from(categories).sort();
     
-    // Count occurrences for each category
+    // Get unique categories for y-axis
+    const yCategories = new Set();
+    filteredData.forEach(item => {
+        if (item[yAxisField] !== undefined && item[yAxisField] !== null && item[yAxisField] !== '') {
+            yCategories.add(item[yAxisField]);
+        }
+    });
+    const yLabels = Array.from(yCategories);
+    
+    // If no groupBy field is specified
     if (!groupByField) {
-        const counts = xLabels.map(category => {
-            return filteredData.filter(item => item[xAxisField] === category).length;
+        // Create a breakdown of x-values vs y-values (frequency table)
+        const countMatrix = {};
+        xLabels.forEach(xCategory => {
+            countMatrix[xCategory] = {};
+            yLabels.forEach(yCategory => {
+                countMatrix[xCategory][yCategory] = 0;
+            });
+        });
+        
+        // Count occurrences
+        filteredData.forEach(item => {
+            const xValue = item[xAxisField];
+            const yValue = item[yAxisField];
+            
+            if (
+                xValue !== undefined && 
+                xValue !== null && 
+                xValue !== '' && 
+                yValue !== undefined && 
+                yValue !== null && 
+                yValue !== ''
+            ) {
+                if (countMatrix[xValue] && countMatrix[xValue][yValue] !== undefined) {
+                    countMatrix[xValue][yValue]++;
+                }
+            }
+        });
+        
+        // Create a stacked bar chart with a series for each y-value
+        const datasets = yLabels.map((yCategory, index) => {
+            const data = xLabels.map(xCategory => countMatrix[xCategory][yCategory]);
+            const color = generateColors(1)[0];
+            
+            return {
+                label: yCategory,
+                data: data,
+                backgroundColor: color.replace('1)', '0.5)'),
+                borderColor: color,
+                borderWidth: 1
+            };
         });
         
         return {
             labels: xLabels,
-            datasets: [{
-                label: 'Count',
-                data: counts,
-                backgroundColor: 'rgba(54, 162, 235, 0.5)',
-                borderColor: 'rgba(54, 162, 235, 1)',
-                borderWidth: 1
-            }]
+            datasets: datasets
         };
     } else {
-        // With groupBy field, create multiple datasets based on count
+        // With groupBy field, create multiple datasets
         const groupValues = new Set();
         filteredData.forEach(item => {
-            if (item[groupByField]) {
+            if (item[groupByField] !== undefined && item[groupByField] !== null && item[groupByField] !== '') {
                 groupValues.add(item[groupByField]);
             }
         });
@@ -1084,13 +1428,20 @@ function prepareCategoricalData(xAxisField, yAxisField, groupByField) {
 // Generate an array of colors
 function generateColors(count) {
     const baseColors = [
-        'rgba(54, 162, 235, 1)',
-        'rgba(255, 99, 132, 1)',
-        'rgba(255, 206, 86, 1)',
-        'rgba(75, 192, 192, 1)',
-        'rgba(153, 102, 255, 1)',
-        'rgba(255, 159, 64, 1)',
-        'rgba(199, 199, 199, 1)'
+        'rgba(54, 162, 235, 1)',   // Blue
+        'rgba(255, 99, 132, 1)',   // Red
+        'rgba(255, 206, 86, 1)',   // Yellow
+        'rgba(75, 192, 192, 1)',   // Green
+        'rgba(153, 102, 255, 1)',  // Purple
+        'rgba(255, 159, 64, 1)',   // Orange
+        'rgba(199, 199, 199, 1)',  // Gray
+        'rgba(83, 123, 196, 1)',   // Blue-Purple
+        'rgba(255, 133, 27, 1)',   // Dark Orange
+        'rgba(46, 204, 113, 1)',   // Emerald Green
+        'rgba(241, 196, 15, 1)',   // Sunflower Yellow
+        'rgba(231, 76, 60, 1)',    // Pomegranate Red
+        'rgba(142, 68, 173, 1)',   // Amethyst Purple
+        'rgba(39, 174, 96, 1)'     // Nephritis Green
     ];
     
     // If we need more colors than the base set, generate them
@@ -1100,14 +1451,34 @@ function generateColors(count) {
         const colors = [...baseColors];
         
         for (let i = baseColors.length; i < count; i++) {
-            const r = Math.floor(Math.random() * 255);
-            const g = Math.floor(Math.random() * 255);
-            const b = Math.floor(Math.random() * 255);
+            const h = (i * 137.508) % 360; // Use golden angle approximation for good distribution
+            const s = 75 + Math.random() * 15; // High saturation
+            const l = 50 + Math.random() * 10; // Medium lightness
+            
+            // Convert HSL to RGB to RGBA
+            const h1 = h / 360;
+            const q = l < 50 ? l * (1 + s/100) : l + s - (l * s/100);
+            const p = 2 * l - q;
+            
+            const r = Math.round(hueToRgb(p, q, h1 + 1/3) * 255);
+            const g = Math.round(hueToRgb(p, q, h1) * 255);
+            const b = Math.round(hueToRgb(p, q, h1 - 1/3) * 255);
+            
             colors.push(`rgba(${r}, ${g}, ${b}, 1)`);
         }
         
         return colors;
     }
+}
+
+// Helper function for HSL to RGB conversion
+function hueToRgb(p, q, t) {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
 }
 
 // Calculate correlation between two numerical variables
