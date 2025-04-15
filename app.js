@@ -363,32 +363,41 @@ async function loadData() {
 323,35-39,Female,Married,1,Bachelor,"Above $300,000",Korean,9,One,Zero,One,15,Personal Choice;Personal Health;Income;Relationship Status (or lack thereof);Time/Help Availability;Employment Status;Significant Other�s Opinion;Religion,Agnostic
 320,0-18,Male,Single,1,No High School Diploma,"$50,000 � $74,999",Canada,,,,,,Income;Religion;Employment Status;Relationship Status (or lack thereof);Personal Choice;Time/Help Availability;Personal Health;Significant Other�s Opinion,None`;
 
-        // Parse CSV
+        // Parse CSV data
         const lines = csvText.split('\n');
         const headers = parseCSVLine(lines[0]);
         
+        const data = [];
         for (let i = 1; i < lines.length; i++) {
-            if (lines[i].trim() === '') continue;
+            if (lines[i].trim() === '') continue; // Skip empty lines
             
             const values = parseCSVLine(lines[i]);
-            const rowData = {};
+            if (values.length !== headers.length) continue; // Skip invalid lines
             
+            const item = {};
             headers.forEach((header, index) => {
-                rowData[header] = values[index] || '';
+                item[header] = values[index];
             });
             
-            surveyData.push(rowData);
+            data.push(item);
         }
         
-        console.log("Loaded data:", surveyData);
+        // Normalize numeric values (convert text to numbers)
+        const normalizedData = normalizeDataValues(data);
         
-        // Initialize the dashboard with the loaded data
-        filteredData = [...surveyData];
+        // Store the data
+        surveyData = normalizedData;
+        filteredData = [...surveyData]; // Create a copy for filtered use
+        
+        // Initialize the dashboard
         initializeDashboard();
-        
     } catch (error) {
-        console.error('Error loading data:', error);
-        document.getElementById('datasetInfo').innerHTML = '<div class="alert alert-danger">Error loading data: ' + error.message + '</div>';
+        console.error("Error loading data:", error);
+        document.getElementById('datasetInfo').innerHTML = `
+            <div class="alert alert-danger">
+                <strong>Error loading data:</strong> ${error.message}
+            </div>
+        `;
     }
 }
 
@@ -425,23 +434,36 @@ function parseCSVLine(line) {
 
 // Initialize the dashboard with the loaded data
 function initializeDashboard() {
-    // Populate filter options
+    // Populate filter dropdowns
     populateFilterOptions();
     
-    // Populate dropdown options for chart axes and grouping
+    // Populate chart options
     populateChartOptions();
     
-    // Initialize the data table
-    updateDataTable();
-    
-    // Initialize correlation dropdowns
+    // Populate correlation options
     populateCorrelationOptions();
     
-    // Display dataset info
+    // Initialize data table
+    updateDataTable();
+    
+    // Update dataset info
     updateDatasetInfo();
     
-    // Initialize the main chart with default settings
-    updateChart();
+    // Set default values for X and Y axes for the requested graph
+    const xField = '10) What is your ideal number of children?';
+    const yField = 'How many biological siblings do you have?';
+    
+    // Log debug info
+    console.log("Setting up correlation graph for:", xField, yField);
+    
+    // Make sure the dropdown options exist before setting them
+    setTimeout(() => {
+        // Generate the specialized correlation chart instead of using the default chart
+        createSiblingChildrenCorrelationChart();
+        
+        // Log what we've done
+        console.log("Correlation graph setup complete");
+    }, 500); // Small delay to ensure everything is loaded
 }
 
 // Populate filter options from the dataset
@@ -1272,6 +1294,43 @@ function prepareCategoricalNumericData(xAxisField, yAxisField, groupByField) {
 // Prepare data for numeric X and numeric Y (scatter plot)
 function prepareNumericNumericData(xAxisField, yAxisField, groupByField) {
     try {
+        // Debug: Log the fields we're working with
+        console.log("Preparing numeric data for:", xAxisField, yAxisField);
+        
+        // Debug: Count valid data points
+        let validPoints = 0;
+        let totalPoints = 0;
+        let dataValues = [];
+        
+        // Sample a few values to debug
+        filteredData.slice(0, 10).forEach((item, index) => {
+            if (!item) return;
+            totalPoints++;
+            
+            const x = item[xAxisField];
+            const y = item[yAxisField];
+            const xNum = Number(x);
+            const yNum = Number(y);
+            
+            // Log the values from the first few items
+            console.log(`Item ${index}:`, {
+                xField: x,
+                yField: y,
+                xNumeric: xNum,
+                yNumeric: yNum,
+                isValidX: !isNaN(xNum),
+                isValidY: !isNaN(yNum)
+            });
+            
+            if (!isNaN(xNum) && !isNaN(yNum)) {
+                validPoints++;
+                dataValues.push({ x: xNum, y: yNum });
+            }
+        });
+        
+        console.log(`Valid points: ${validPoints}/${totalPoints}`);
+        console.log("Sample data values:", dataValues);
+        
         // If no groupBy field is specified
         if (!groupByField) {
             // For survey data with scale questions (e.g., 1-15), create a frequency-based visualization
@@ -1363,11 +1422,30 @@ function prepareNumericNumericData(xAxisField, yAxisField, groupByField) {
                 // For other numeric data, use regular scatter plot
                 const data = filteredData
                     .filter(item => item)
-                    .map(item => ({
-                        x: Number(item[xAxisField]) || 0,
-                        y: Number(item[yAxisField]) || 0
-                    }))
-                    .filter(point => !isNaN(point.x) && !isNaN(point.y));
+                    .map(item => {
+                        // Get the raw values
+                        const xVal = item[xAxisField];
+                        const yVal = item[yAxisField];
+                        
+                        // Convert to numbers, but don't replace with 0 if NaN
+                        const xNum = Number(xVal);
+                        const yNum = Number(yVal);
+                        
+                        // Only include points where both values are valid numbers and not empty strings
+                        if (!isNaN(xNum) && !isNaN(yNum) && 
+                            xVal !== undefined && xVal !== null && xVal !== '' && 
+                            yVal !== undefined && yVal !== null && yVal !== '') {
+                            return {
+                                x: xNum,
+                                y: yNum
+                            };
+                        }
+                        return null;
+                    })
+                    .filter(point => point !== null);
+                
+                // Debug log
+                console.log(`Scatter data points: ${data.length} valid points from ${filteredData.length} total records`);
                 
                 return {
                     datasets: [{
@@ -1375,7 +1453,9 @@ function prepareNumericNumericData(xAxisField, yAxisField, groupByField) {
                         data: data,
                         backgroundColor: 'rgba(54, 162, 235, 0.5)',
                         borderColor: 'rgba(54, 162, 235, 1)',
-                        borderWidth: 1
+                        borderWidth: 1,
+                        pointRadius: 5,  // Make points more visible
+                        pointHoverRadius: 7
                     }]
                 };
             }
@@ -1700,4 +1780,241 @@ function exportFilteredDataToCSV() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+}
+
+// Convert specific field values to appropriate types
+function normalizeDataValues(data) {
+    // Fields we know should be numeric
+    const numericFields = [
+        'How many biological children do you have?',
+        'How many biological siblings do you have?',
+        'On a scale of 1-15, 1 being not religious at all, and 15 being very religious, please identify how religious you are:',
+        'On a scale of 1-15, 1 being not at all and 15 being completely, how important is having children to you?',
+        'On a scale of 1-15 (1 being no influence, 15 being very influential) how much influence do you have over family planning decisions?',
+        '10) What is your ideal number of children?'
+    ];
+    
+    // Process the data
+    data.forEach(item => {
+        numericFields.forEach(field => {
+            if (item[field]) {
+                // Convert text values to appropriate numeric values
+                if (item[field] === 'Zero') {
+                    item[field] = '0';
+                } else if (item[field] === 'One') {
+                    item[field] = '1';
+                } else if (item[field] === 'Two') {
+                    item[field] = '2';
+                } else if (item[field] === 'Three') {
+                    item[field] = '3';
+                } else if (item[field] === 'Four') {
+                    item[field] = '4';
+                } else if (item[field] === 'Five') {
+                    item[field] = '5';
+                } else if (item[field] === 'Six') {
+                    item[field] = '6';
+                } else if (item[field] === 'Seven or more') {
+                    item[field] = '7';
+                }
+            }
+        });
+    });
+    
+    console.log("Data normalized. Sample:", data.slice(0, 3));
+    return data;
+}
+
+// Create a specialized chart for siblings vs ideal children correlation
+function createSiblingChildrenCorrelationChart() {
+    try {
+        // Ensure any existing chart is properly destroyed
+        if (mainChart) {
+            mainChart.destroy();
+            mainChart = null;
+        }
+        
+        // Set the header title
+        document.getElementById('chartTitle').textContent = 'Average Ideal Number of Children by Number of Biological Siblings';
+        
+        // Fields we need
+        const siblingField = 'How many biological siblings do you have?';
+        const childrenField = '10) What is your ideal number of children?';
+        
+        // Get unique sibling counts
+        const siblingCounts = new Set();
+        filteredData.forEach(item => {
+            if (item[siblingField] !== undefined && item[siblingField] !== null && item[siblingField] !== '') {
+                siblingCounts.add(Number(item[siblingField]));
+            }
+        });
+        
+        // Sort sibling counts numerically
+        const sortedSiblingCounts = Array.from(siblingCounts).sort((a, b) => a - b);
+        
+        // Calculate average ideal children for each sibling count
+        const averageData = [];
+        const countData = [];
+        sortedSiblingCounts.forEach(siblingCount => {
+            // Get all records for this sibling count
+            const matchingRecords = filteredData.filter(item => 
+                Number(item[siblingField]) === siblingCount && 
+                item[childrenField] !== undefined && 
+                item[childrenField] !== null && 
+                item[childrenField] !== ''
+            );
+            
+            if (matchingRecords.length > 0) {
+                // Calculate average ideal children count
+                const sum = matchingRecords.reduce((total, item) => {
+                    return total + Number(item[childrenField]);
+                }, 0);
+                
+                const avg = sum / matchingRecords.length;
+                averageData.push(parseFloat(avg.toFixed(2)));
+                countData.push(matchingRecords.length);
+            } else {
+                averageData.push(0);
+                countData.push(0);
+            }
+        });
+        
+        // Create the chart
+        const ctx = document.getElementById('mainChart').getContext('2d');
+        
+        mainChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: sortedSiblingCounts.map(count => count.toString()),
+                datasets: [{
+                    label: 'Average Ideal Number of Children',
+                    data: averageData,
+                    backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const index = context.dataIndex;
+                                return `Average: ${context.raw} (from ${countData[index]} responses)`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Average Ideal Number of Children'
+                        },
+                        ticks: {
+                            precision: 1
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Number of Biological Siblings'
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Also calculate Pearson correlation for these two variables
+        calculateAndDisplayCorrelation(siblingField, childrenField);
+    } catch (error) {
+        console.error("Error creating correlation chart:", error);
+        const chartContainer = document.querySelector('.chart-container');
+        chartContainer.innerHTML = `
+            <div class="alert alert-danger">
+                <strong>Error creating chart:</strong> ${error.message}
+            </div>
+        `;
+    }
+}
+
+// Calculate and display correlation between two fields
+function calculateAndDisplayCorrelation(field1, field2) {
+    // Extract valid pairs of values
+    const pairs = filteredData
+        .map(item => [Number(item[field1]), Number(item[field2])])
+        .filter(pair => !isNaN(pair[0]) && !isNaN(pair[1]));
+    
+    if (pairs.length < 3) {
+        document.getElementById('correlationResult').innerHTML = 
+            '<div class="alert alert-warning">Insufficient data points for correlation (need at least 3).</div>';
+        return;
+    }
+    
+    // Calculate means
+    const mean1 = pairs.reduce((sum, pair) => sum + pair[0], 0) / pairs.length;
+    const mean2 = pairs.reduce((sum, pair) => sum + pair[1], 0) / pairs.length;
+    
+    // Calculate covariance and standard deviations
+    let covariance = 0;
+    let variance1 = 0;
+    let variance2 = 0;
+    
+    pairs.forEach(pair => {
+        const diff1 = pair[0] - mean1;
+        const diff2 = pair[1] - mean2;
+        
+        covariance += diff1 * diff2;
+        variance1 += diff1 * diff1;
+        variance2 += diff2 * diff2;
+    });
+    
+    covariance /= pairs.length;
+    variance1 /= pairs.length;
+    variance2 /= pairs.length;
+    
+    const stdDev1 = Math.sqrt(variance1);
+    const stdDev2 = Math.sqrt(variance2);
+    
+    // Calculate Pearson correlation coefficient
+    const correlation = covariance / (stdDev1 * stdDev2);
+    
+    // Determine correlation strength
+    let strengthClass = '';
+    let strengthText = '';
+    
+    if (Math.abs(correlation) >= 0.7) {
+        strengthClass = 'correlation-strong';
+        strengthText = correlation > 0 ? 'Strong positive' : 'Strong negative';
+    } else if (Math.abs(correlation) >= 0.3) {
+        strengthClass = 'correlation-moderate';
+        strengthText = correlation > 0 ? 'Moderate positive' : 'Moderate negative';
+    } else {
+        strengthClass = 'correlation-weak';
+        strengthText = correlation > 0 ? 'Weak positive' : 'Weak negative';
+    }
+    
+    // Display the result
+    document.getElementById('correlationResult').innerHTML = `
+        <div class="${strengthClass} p-3 rounded">
+            <h5>Correlation Analysis</h5>
+            <p><strong>Pearson correlation coefficient:</strong> ${correlation.toFixed(4)}</p>
+            <p><strong>Interpretation:</strong> ${strengthText} correlation between number of siblings and ideal number of children</p>
+            <p><strong>Sample size:</strong> ${pairs.length} data points</p>
+        </div>
+    `;
+    
+    // Set the dropdown values to match what we're showing
+    const var1 = document.getElementById('correlationVar1');
+    const var2 = document.getElementById('correlationVar2');
+    
+    if (var1 && var1.querySelector(`option[value="${field1}"]`)) {
+        var1.value = field1;
+    }
+    
+    if (var2 && var2.querySelector(`option[value="${field2}"]`)) {
+        var2.value = field2;
+    }
 }
