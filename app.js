@@ -458,8 +458,15 @@ function initializeDashboard() {
     
     // Make sure the dropdown options exist before setting them
     setTimeout(() => {
-        // Generate the specialized correlation chart instead of using the default chart
-        createSiblingChildrenCorrelationChart();
+        // Set the dropdown values
+        const xSelect = document.getElementById('xAxisSelect');
+        const ySelect = document.getElementById('yAxisSelect');
+        
+        if (xSelect) xSelect.value = xField;
+        if (ySelect) ySelect.value = yField;
+        
+        // Generate the specialized correlation chart
+        createAverageCorrelationChart(xField, yField);
         
         // Log what we've done
         console.log("Correlation graph setup complete");
@@ -827,7 +834,7 @@ function updateChart() {
         const yAxisField = document.getElementById('yAxisSelect').value;
         const groupByField = document.getElementById('groupBySelect').value;
         
-        // For survey data, use our more reliable method to determine if fields are numeric
+        // For survey data, use our reliable method to determine if fields are numeric
         const isNumericField = (fieldName) => {
             // Check if the field typically contains numeric values
             const numericFields = [
@@ -871,58 +878,38 @@ function updateChart() {
         const isXAxisNumeric = isNumericField(xAxisField);
         const isYAxisNumeric = isNumericField(yAxisField);
         
-        // Check if the fields are scale questions (values 1-15)
-        const isScaleQuestion = (field) => {
-            return field.includes('scale of 1-15') || 
-                   field.includes('how religious') || 
-                   field.includes('how important') || 
-                   field.includes('how much influence');
-        };
+        // Check if we should use the specialized correlation chart
+        const siblingOrChildFields = [
+            'How many biological children do you have?',
+            'How many biological siblings do you have?',
+            '10) What is your ideal number of children?'
+        ];
         
-        // Determine if we should use a bubble chart for visualization
-        const shouldUseBubbleChart = isXAxisNumeric && isYAxisNumeric && 
-                                   (isScaleQuestion(xAxisField) || isScaleQuestion(yAxisField)) && 
-                                   !groupByField;
-        
-        // Check for the visual indicator element
-        let chartNotice = document.getElementById('chartTypeNotice');
-        
-        // If this is a scale vs scale comparison, set the chart type dropdown to bubble and show notice
-        if (shouldUseBubbleChart) {
-            if (userSelectedChartType !== 'bubble') {
-                chartTypeSelect.value = 'bubble';
-                
-                // Create or update the notice
-                if (!chartNotice) {
-                    chartNotice = document.createElement('div');
-                    chartNotice.id = 'chartTypeNotice';
-                    chartNotice.className = 'alert alert-info mt-2';
-                    chartNotice.style.fontSize = '0.9rem';
-                    chartTypeSelect.parentNode.appendChild(chartNotice);
-                }
-                
-                chartNotice.innerHTML = '<i class="bi bi-info-circle-fill me-1"></i> Bubble chart automatically selected for scale question comparison.';
-            }
-        } else if (chartNotice) {
-            // Remove the notice if it exists and we're not using bubble chart
-            chartNotice.remove();
+        const hasSiblingOrChildField = 
+            siblingOrChildFields.includes(xAxisField) || 
+            siblingOrChildFields.includes(yAxisField);
+            
+        // ONLY use specialized chart when:
+        // 1. We have at least one siblings/children field
+        // 2. BOTH axes are numeric (not categorical like religion)
+        // 3. No grouping is selected
+        // 4. User hasn't selected a specific chart type other than bar
+        if (hasSiblingOrChildField && 
+            isXAxisNumeric && 
+            isYAxisNumeric && 
+            !groupByField && 
+            (userSelectedChartType === 'bar' || userSelectedChartType === 'scatter')) {
+            createAverageCorrelationChart(xAxisField, yAxisField);
+            return;
         }
         
-        // Get the effective chart type (may have been changed by the above logic)
-        const effectiveChartType = shouldUseBubbleChart ? 'bubble' : chartTypeSelect.value;
-        
-        // Update chart title based on data types
+        // Set default chart title based on data types
         if (!isXAxisNumeric && isYAxisNumeric) {
             document.getElementById('chartTitle').textContent = 
                 `Average ${yAxisField} by ${xAxisField}${groupByField ? ' grouped by ' + groupByField : ''}`;
         } else if (isXAxisNumeric && isYAxisNumeric) {
-            if (effectiveChartType === 'bubble') {
-                document.getElementById('chartTitle').textContent = 
-                    `Frequency of responses: ${yAxisField} vs ${xAxisField}`;
-            } else {
-                document.getElementById('chartTitle').textContent = 
-                    `${yAxisField} vs ${xAxisField}${groupByField ? ' grouped by ' + groupByField : ''}`;
-            }
+            document.getElementById('chartTitle').textContent = 
+                `${yAxisField} vs ${xAxisField}${groupByField ? ' grouped by ' + groupByField : ''}`;
         } else if (!isXAxisNumeric && !isYAxisNumeric) {
             document.getElementById('chartTitle').textContent = 
                 `${yAxisField} distribution by ${xAxisField}${groupByField ? ' grouped by ' + groupByField : ''}`;
@@ -974,7 +961,7 @@ function updateChart() {
                             let label = context.dataset.label || '';
                             
                             // Special handling for bubble charts
-                            if (effectiveChartType === 'bubble') {
+                            if (userSelectedChartType === 'bubble') {
                                 const point = context.raw || {};
                                 return `${xAxisField}: ${point.x || 0}, ${yAxisField}: ${point.y || 0}, Count: ${point.count || 0} responses`;
                             }
@@ -1046,47 +1033,14 @@ function updateChart() {
         };
         
         // For categorical-categorical data, use stacked bars
-        if (!isXAxisNumeric && !isYAxisNumeric && effectiveChartType === 'bar') {
+        if (!isXAxisNumeric && !isYAxisNumeric && userSelectedChartType === 'bar') {
             chartOptions.scales.x.stacked = true;
             chartOptions.scales.y.stacked = true;
         }
         
-        // For bubble charts, customize the radius scale
-        if (effectiveChartType === 'bubble') {
-            // Add a bubble size legend
-            if (!document.getElementById('bubbleSizeLegend')) {
-                const chartContainer = document.querySelector('.chart-container');
-                const legend = document.createElement('div');
-                legend.id = 'bubbleSizeLegend';
-                legend.className = 'text-center mt-2';
-                legend.innerHTML = '<small class="text-muted">Bubble size represents number of responses with each combination</small>';
-                chartContainer.appendChild(legend);
-            }
-            
-            // Make sure bubble chart points have required properties
-            if (chartData.datasets && chartData.datasets.length > 0) {
-                chartData.datasets.forEach(dataset => {
-                    if (dataset.data && Array.isArray(dataset.data)) {
-                        dataset.data.forEach(point => {
-                            if (point) {
-                                // Ensure required properties for bubble charts
-                                point.x = point.x || 0;
-                                point.y = point.y || 0;
-                                point.r = point.r || 3; // Default radius
-                            }
-                        });
-                    }
-                });
-            }
-        } else {
-            // Remove bubble legend if not a bubble chart
-            const legend = document.getElementById('bubbleSizeLegend');
-            if (legend) legend.remove();
-        }
-        
-        // Create new chart
+        // Create the chart
         mainChart = new Chart(ctx, {
-            type: effectiveChartType,
+            type: userSelectedChartType,
             data: chartData,
             options: chartOptions
         });
@@ -1824,8 +1778,9 @@ function normalizeDataValues(data) {
     return data;
 }
 
-// Create a specialized chart for siblings vs ideal children correlation
-function createSiblingChildrenCorrelationChart() {
+// Create a specialized chart for correlation analysis with averages 
+// Works for siblings vs ideal children and similar numeric fields
+function createAverageCorrelationChart(field1, field2) {
     try {
         // Ensure any existing chart is properly destroyed
         if (mainChart) {
@@ -1833,40 +1788,77 @@ function createSiblingChildrenCorrelationChart() {
             mainChart = null;
         }
         
-        // Set the header title
-        document.getElementById('chartTitle').textContent = 'Average Ideal Number of Children by Number of Biological Siblings';
+        // Determine which field should be on which axis based on the field names
+        let xAxisField, yAxisField;
         
-        // Fields we need
-        const siblingField = 'How many biological siblings do you have?';
-        const childrenField = '10) What is your ideal number of children?';
+        // Detect if we're working with these specific fields (siblings vs ideal children)
+        const isSiblingIdealChildrenPair = 
+            (field1.includes('siblings') && field2.includes('ideal')) || 
+            (field2.includes('siblings') && field1.includes('ideal'));
+            
+        // Detect if we're working with these specific fields (biological children vs ideal children)
+        const isActualIdealChildrenPair = 
+            (field1.includes('biological children') && field2.includes('ideal')) || 
+            (field2.includes('biological children') && field1.includes('ideal'));
+            
+        // For all supported scenarios, decide which field goes on which axis
+        if (field1.includes('siblings') || field1.includes('biological children') || field1.includes('biological siblings')) {
+            xAxisField = field1;
+            yAxisField = field2;
+        } else if (field2.includes('siblings') || field2.includes('biological children') || field2.includes('biological siblings')) {
+            xAxisField = field2;
+            yAxisField = field1;
+        } else if (field1.includes('ideal')) {
+            xAxisField = field2;
+            yAxisField = field1;
+        } else if (field2.includes('ideal')) {
+            xAxisField = field1;
+            yAxisField = field2;
+        } else {
+            // For other field combinations, use the order provided
+            xAxisField = field1;
+            yAxisField = field2;
+        }
         
-        // Get unique sibling counts
-        const siblingCounts = new Set();
+        // Set a meaningful chart title based on the fields
+        let chartTitle;
+        if (isSiblingIdealChildrenPair) {
+            chartTitle = 'Average Ideal Number of Children by Number of Biological Siblings';
+        } else if (isActualIdealChildrenPair) {
+            chartTitle = 'Average Ideal Number of Children by Actual Biological Children';
+        } else {
+            chartTitle = `Average ${yAxisField} by ${xAxisField}`;
+        }
+        
+        document.getElementById('chartTitle').textContent = chartTitle;
+        
+        // Get unique X-axis values (e.g., sibling counts)
+        const xValues = new Set();
         filteredData.forEach(item => {
-            if (item[siblingField] !== undefined && item[siblingField] !== null && item[siblingField] !== '') {
-                siblingCounts.add(Number(item[siblingField]));
+            if (item[xAxisField] !== undefined && item[xAxisField] !== null && item[xAxisField] !== '') {
+                xValues.add(Number(item[xAxisField]));
             }
         });
         
-        // Sort sibling counts numerically
-        const sortedSiblingCounts = Array.from(siblingCounts).sort((a, b) => a - b);
+        // Sort values numerically
+        const sortedXValues = Array.from(xValues).sort((a, b) => a - b);
         
-        // Calculate average ideal children for each sibling count
+        // Calculate average Y values for each X value
         const averageData = [];
         const countData = [];
-        sortedSiblingCounts.forEach(siblingCount => {
-            // Get all records for this sibling count
+        sortedXValues.forEach(xValue => {
+            // Get all records for this X value
             const matchingRecords = filteredData.filter(item => 
-                Number(item[siblingField]) === siblingCount && 
-                item[childrenField] !== undefined && 
-                item[childrenField] !== null && 
-                item[childrenField] !== ''
+                Number(item[xAxisField]) === xValue && 
+                item[yAxisField] !== undefined && 
+                item[yAxisField] !== null && 
+                item[yAxisField] !== ''
             );
             
             if (matchingRecords.length > 0) {
-                // Calculate average ideal children count
+                // Calculate average Y value
                 const sum = matchingRecords.reduce((total, item) => {
-                    return total + Number(item[childrenField]);
+                    return total + Number(item[yAxisField]);
                 }, 0);
                 
                 const avg = sum / matchingRecords.length;
@@ -1884,9 +1876,9 @@ function createSiblingChildrenCorrelationChart() {
         mainChart = new Chart(ctx, {
             type: 'bar',
             data: {
-                labels: sortedSiblingCounts.map(count => count.toString()),
+                labels: sortedXValues.map(count => count.toString()),
                 datasets: [{
-                    label: 'Average Ideal Number of Children',
+                    label: `Average ${yAxisField}`,
                     data: averageData,
                     backgroundColor: 'rgba(54, 162, 235, 0.6)',
                     borderColor: 'rgba(54, 162, 235, 1)',
@@ -1911,7 +1903,7 @@ function createSiblingChildrenCorrelationChart() {
                         beginAtZero: true,
                         title: {
                             display: true,
-                            text: 'Average Ideal Number of Children'
+                            text: `Average ${yAxisField}`
                         },
                         ticks: {
                             precision: 1
@@ -1920,7 +1912,7 @@ function createSiblingChildrenCorrelationChart() {
                     x: {
                         title: {
                             display: true,
-                            text: 'Number of Biological Siblings'
+                            text: xAxisField
                         }
                     }
                 }
@@ -1928,7 +1920,7 @@ function createSiblingChildrenCorrelationChart() {
         });
         
         // Also calculate Pearson correlation for these two variables
-        calculateAndDisplayCorrelation(siblingField, childrenField);
+        calculateAndDisplayCorrelation(xAxisField, yAxisField);
     } catch (error) {
         console.error("Error creating correlation chart:", error);
         const chartContainer = document.querySelector('.chart-container');
